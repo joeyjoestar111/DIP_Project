@@ -1,4 +1,5 @@
 # coding: utf-8
+import os
 from os import path as osp
 
 root = osp.dirname(osp.abspath(__file__))
@@ -11,8 +12,11 @@ root = osp.dirname(osp.abspath(__file__))
 # O-Haze
 OHAZE_ROOT = osp.abspath(osp.join(root, '../data', 'O-Haze'))
 
+# HazeRD
+HazeRD_ROOT = osp.abspath(osp.join(root, '../data', 'HazeRD'))
+
 # RESIDE
 TRAIN_ITS_ROOT = osp.abspath(osp.join(root, '../data', 'RESIDE', 'ITS_v2'))  # ITS
 TEST_SOTS_ROOT = osp.abspath(osp.join(root, '../data', 'RESIDE', 'SOTS', 'nyuhaze500'))  # SOTS indoor
-# TEST_SOTS_ROOT = os.path.join(root, 'SOTS', 'outdoor')  # SOTS outdoor
-# TEST_HSTS_ROOT = os.path.join(root, 'HSTS', 'synthetic')  # HSTS
+#TEST_SOTS_ROOT = os.path.join(root, 'SOTS', 'outdoor')  # SOTS outdoor
+#TEST_HSTS_ROOT = os.path.join(root, 'HSTS', 'synthetic')  # HSTS

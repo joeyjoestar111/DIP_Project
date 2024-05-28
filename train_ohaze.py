@@ -16,7 +16,7 @@ from tools.config import OHAZE_ROOT
 from datasets import OHazeDataset
 from tools.utils import AvgMeter, check_mkdir, sliding_forward
 
-from skimage.metrics import peak_signal_noise_ratio, structural_similarity
+from skimage.metrics import peak_signal_noise_ratio, structural_similarity, mean_squared_error
 
 
 def parse_args():
@@ -36,14 +36,14 @@ def parse_args():
 cfgs = {
     'use_physical': True,
     'iter_num': 20000,
-    'train_batch_size': 16,
+    'train_batch_size': 4,
     'last_iter': 0,
     'lr': 2e-4,
     'lr_decay': 0.9,
     'weight_decay': 2e-5,
     'momentum': 0.9,
     'snapshot': '',
-    'val_freq': 2000,
+    'val_freq': 1000,
     'crop_size': 512,
 }
 
@@ -151,7 +151,7 @@ def validate(net, curr_iter, optimizer):
     net.eval()
 
     loss_record = AvgMeter()
-    psnr_record, ssim_record = AvgMeter(), AvgMeter()
+    psnr_record, ssim_record, mse_record = AvgMeter(), AvgMeter(), AvgMeter()
 
     with torch.no_grad():
         for data in tqdm(val_loader):
@@ -168,13 +168,15 @@ def validate(net, curr_iter, optimizer):
                 g = gt[i].cpu().numpy().transpose([1, 2, 0])
                 psnr = peak_signal_noise_ratio(g, r)
                 ssim = structural_similarity(g, r, data_range=1, multichannel=True,
-                                             gaussian_weights=True, sigma=1.5, use_sample_covariance=False)
+                                             gaussian_weights=True, sigma=1.5, use_sample_covariance=False, win_size = 11, channel_axis=2)
+                mse = mean_squared_error(g, r)
                 psnr_record.update(psnr)
                 ssim_record.update(ssim)
+                mse_record.update(mse)
 
     snapshot_name = 'iter_%d_loss_%.5f_lr_%.6f' % (curr_iter + 1, loss_record.avg, optimizer.param_groups[1]['lr'])
-    log = '[validate]: [iter {}], [loss {:.5f}] [PSNR {:.4f}] [SSIM {:.4f}]'.format(
-        curr_iter + 1, loss_record.avg, psnr_record.avg, ssim_record.avg)
+    log = '[validate]: [iter {}], [loss {:.5f}] [PSNR {:.4f}] [SSIM {:.4f}] [MSE {:.4f}]'.format(
+        curr_iter + 1, loss_record.avg, psnr_record.avg, ssim_record.avg, mse_record.avg)
     print(log)
     open(log_path, 'a').write(log + '\n')
     torch.save(net.state_dict(),
@@ -200,6 +202,6 @@ if __name__ == '__main__':
     val_loader = DataLoader(val_dataset, batch_size=1)
 
     criterion = nn.L1Loss().cuda()
-    log_path = os.path.join(args.ckpt_path, args.exp_name, str(datetime.datetime.now()) + '.txt')
+    log_path = os.path.join(args.ckpt_path, args.exp_name, "Simple_UNet" + str(datetime.datetime.now()) + '.txt')
 
     main()

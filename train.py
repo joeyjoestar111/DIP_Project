@@ -35,14 +35,14 @@ def parse_args():
 cfgs = {
     'use_physical': True,
     'iter_num': 40000,
-    'train_batch_size': 16,
+    'train_batch_size': 4,
     'last_iter': 0,
     'lr': 5e-4,
     'lr_decay': 0.9,
     'weight_decay': 0,
     'momentum': 0.9,
     'snapshot': '',
-    'val_freq': 5000,
+    'val_freq': 1000,
     'crop_size': 256
 }
 
@@ -172,10 +172,11 @@ def validate(net, curr_iter, optimizer):
 
     snapshot_name = 'iter_%d_loss_%.5f_lr_%.6f' % (curr_iter + 1, loss_record.avg, optimizer.param_groups[1]['lr'])
     print('[validate]: [iter %d], [loss %.5f]' % (curr_iter + 1, loss_record.avg))
-    torch.save(net.state_dict(),
-               os.path.join(args.ckpt_path, args.exp_name, snapshot_name + '.pth'))
-    torch.save(optimizer.state_dict(),
-               os.path.join(args.ckpt_path, args.exp_name, snapshot_name + '_optim.pth'))
+    if ((curr_iter+1)%2000):
+        torch.save(net.state_dict(),
+                os.path.join(args.ckpt_path, args.exp_name, snapshot_name + '.pth'))
+        torch.save(optimizer.state_dict(),
+                os.path.join(args.ckpt_path, args.exp_name, snapshot_name + '_optim.pth'))
 
     net.train()
 
@@ -195,6 +196,6 @@ if __name__ == '__main__':
     val_loader = DataLoader(val_dataset, batch_size=8)
 
     criterion = nn.L1Loss().cuda()
-    log_path = os.path.join(args.ckpt_path, args.exp_name, str(datetime.datetime.now()) + '.txt')
+    log_path = os.path.join(args.ckpt_path, args.exp_name, "Baseline_Reside"+str(datetime.datetime.now()) + '.txt')
 
     main()

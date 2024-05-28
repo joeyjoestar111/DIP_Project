@@ -4,6 +4,9 @@ from torch import nn
 
 import torchvision.models as models
 from resnext import ResNeXt101
+from skimage.metrics import mean_squared_error
+from collections import OrderedDict
+import torch.optim as optim
 
 
 class Base(nn.Module):
@@ -895,15 +898,18 @@ class DM2FNet(Base):
         t = F.upsample(self.t(f_phy), size=x0.size()[2:], mode='bilinear')
         x_phy = ((x0 - a * (1 - t)) / t.clamp(min=1e-8)).clamp(min=0., max=1.)
 
-        # J2 = I * exp(R2)
+        # J1 = I + R1 + α * I * e^R1
         r1 = F.upsample(self.j1(f1), size=x0.size()[2:], mode='bilinear')
+        #x_j1 = (torch.exp(log_x0 + r1) + x + r1).clamp(min=0., max=1.)
         x_j1 = torch.exp(log_x0 + r1).clamp(min=0., max=1.)
 
-        # J2 = I + R2
+
+        # J2 = sinhx(I * R2)
         r2 = F.upsample(self.j2(f2), size=x0.size()[2:], mode='bilinear')
+        #x_j2 = ((torch.exp(x * r2) - torch.exp(- x * r2)) / 2 * self.std + self.mean).clamp(min=0., max=1.)
         x_j2 = ((x + r2) * self.std + self.mean).clamp(min=0., max=1.)
 
-        #
+        # J3 = I ^ R3
         r3 = F.upsample(self.j3(f3), size=x0.size()[2:], mode='bilinear')
         x_j3 = torch.exp(-torch.exp(log_log_x0_inverse + r3)).clamp(min=0., max=1.)
 
@@ -930,6 +936,133 @@ class DM2FNet(Base):
             return x_fusion
 
 
+class UNet(nn.Module):
+
+    def __init__(self, in_channels=3, out_channels=3, init_features=32):
+        super(UNet, self).__init__()
+
+        features = init_features
+        self.encoder1 = UNet.conv_block(in_channels, features)
+        self.pool1 = nn.MaxPool2d(kernel_size=2, stride=2)
+        self.encoder2 = UNet.conv_block(features, features * 2)
+        self.pool2 = nn.MaxPool2d(kernel_size=2, stride=2)
+        self.encoder3 = UNet.conv_block(features * 2, features * 4)
+        self.pool3 = nn.MaxPool2d(kernel_size=2, stride=2)
+        self.encoder4 = UNet.conv_block(features * 4, features * 8)
+        self.pool4 = nn.MaxPool2d(kernel_size=2, stride=2)
+
+        self.bottleneck = UNet.conv_block(features * 8, features * 16)
+
+        self.upconv4 = nn.ConvTranspose2d(
+            features * 16, features * 8, kernel_size=2, stride=2
+        )
+        self.decoder4 = UNet.conv_block((features * 8) * 2, features * 8)
+        self.upconv3 = nn.ConvTranspose2d(
+            features * 8, features * 4, kernel_size=2, stride=2
+        )
+        self.decoder3 = UNet.conv_block((features * 4) * 2, features * 4)
+        self.upconv2 = nn.ConvTranspose2d(
+            features * 4, features * 2, kernel_size=2, stride=2
+        )
+        self.decoder2 = UNet.conv_block((features * 2) * 2, features * 2)
+        self.upconv1 = nn.ConvTranspose2d(
+            features * 2, features, kernel_size=2, stride=2
+        )
+        self.decoder1 = UNet.conv_block(features * 2, features)
+
+        self.out = nn.Conv2d(in_channels=features, out_channels=out_channels, kernel_size=1)
+
+        self.final = nn.Conv2d(in_channels=9  ,out_channels = out_channels, kernel_size=1)
+
+
+    def forward(self, x):
+        #block1
+        enc1 = self.encoder1(x)
+        enc2 = self.encoder2(self.pool1(enc1))
+        enc3 = self.encoder3(self.pool2(enc2))
+        enc4 = self.encoder4(self.pool3(enc3))
+
+        bottleneck = self.bottleneck(self.pool4(enc4))
+
+        dec4 = self.upconv4(bottleneck)
+        dec4 = torch.cat((dec4, enc4), dim=1)
+        dec4 = self.decoder4(dec4)
+        dec3 = self.upconv3(dec4)
+        dec3 = torch.cat((dec3, enc3), dim=1)
+        dec3 = self.decoder3(dec3)
+        dec2 = self.upconv2(dec3)
+        dec2 = torch.cat((dec2, enc2), dim=1)
+        dec2 = self.decoder2(dec2)
+        dec1 = self.upconv1(dec2)
+        dec1 = torch.cat((dec1, enc1), dim=1)
+        dec1 = self.decoder1(dec1)
+        out_1 = self.out(dec1)
+        
+        #block2 
+        enc1_2 = self.encoder1(out_1)
+        enc2_2 = self.encoder2(self.pool1(enc1_2))
+        enc3_2 = self.encoder3(self.pool2(enc2_2))
+        enc4_2 = self.encoder4(self.pool3(enc3_2))
+
+        bottleneck_2 = self.bottleneck(self.pool4(enc4_2))
+
+        dec4_2 = self.upconv4(bottleneck_2)
+        dec4_2 = torch.cat((dec4_2, enc4_2), dim=1)
+        dec4_2 = self.decoder4(dec4_2)
+        dec3_2 = self.upconv3(dec4_2)
+        dec3_2 = torch.cat((dec3_2, enc3_2), dim=1)
+        dec3_2 = self.decoder3(dec3_2)
+        dec2_2 = self.upconv2(dec3_2)
+        dec2_2 = torch.cat((dec2_2, enc2_2), dim=1)
+        dec2_2 = self.decoder2(dec2_2)
+        dec1_2 = self.upconv1(dec2_2)
+        dec1_2 = torch.cat((dec1_2, enc1_2), dim=1)
+        dec1_2 = self.decoder1(dec1_2)
+        out_2 = self.out(dec1_2)  
+
+        #block3
+        enc1_3 = self.encoder1(out_2)
+        enc2_3 = self.encoder2(self.pool1(enc1_3))
+        enc3_3 = self.encoder3(self.pool2(enc2_3))
+        enc4_3 = self.encoder4(self.pool3(enc3_3))
+
+        bottleneck_3 = self.bottleneck(self.pool4(enc4_3))
+
+        dec4_3 = self.upconv4(bottleneck_3)
+        dec4_3 = torch.cat((dec4_3, enc4_3), dim=1)
+        dec4_3 = self.decoder4(dec4_3)
+        dec3_3 = self.upconv3(dec4_3)
+        dec3_3 = torch.cat((dec3_3, enc3_3), dim=1)
+        dec3_3 = self.decoder3(dec3_3)
+        dec2_3 = self.upconv2(dec3_3)
+        dec2_3 = torch.cat((dec2_3, enc2_3), dim=1)
+        dec2_3 = self.decoder2(dec2_3)
+        dec1_3 = self.upconv1(dec2_3)
+        dec1_3 = torch.cat((dec1_3, enc1_3), dim=1)
+        dec1_3 = self.decoder1(dec1_3)
+        out_3 = self.out(dec1_3)
+
+
+        torch.cuda.empty_cache()
+        concat = (out_1 + out_2 + out_3) / 3
+        #concat = torch.cat((out_1, out_2, out_3), dim=1)
+        #concat = self.final(concat)
+        #concat = torch.sigmoid(concat)
+
+        return concat
+
+    @staticmethod
+    def conv_block(in_channels, out_channels):
+        return nn.Sequential(
+            nn.Conv2d(in_channels, out_channels, kernel_size=3, padding=1, bias=False),
+            nn.BatchNorm2d(out_channels),
+            nn.ReLU(inplace=True),
+            nn.Conv2d(out_channels, out_channels, kernel_size=3, padding=1, bias=False),
+            nn.BatchNorm2d(out_channels),
+            nn.ReLU(inplace=True)
+        )
+#        return torch.sigmoid(self.out_1(concat_py))
+
 class DM2FNet_woPhy(Base_OHAZE):
     def __init__(self, num_features=64, arch='resnext101_32x8d'):
         super(DM2FNet_woPhy, self).__init__()
@@ -947,6 +1080,8 @@ class DM2FNet_woPhy(Base_OHAZE):
         backbone = models.__dict__[arch](pretrained=True)
         del backbone.fc
         self.backbone = backbone
+
+        self.unet = UNet(in_channels = 3, out_channels = 3)
 
         self.down0 = nn.Sequential(
             nn.Conv2d(64, num_features, kernel_size=1), nn.SELU(),
@@ -1051,6 +1186,7 @@ class DM2FNet_woPhy(Base_OHAZE):
     def forward(self, x0):
         x = (x0 - self.mean_in) / self.std_in
 
+        x = self.unet(x)
         backbone = self.backbone
 
         layer0 = backbone.conv1(x)
