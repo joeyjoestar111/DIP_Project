@@ -179,10 +179,11 @@ def validate(net, curr_iter, optimizer):
         curr_iter + 1, loss_record.avg, psnr_record.avg, ssim_record.avg, mse_record.avg)
     print(log)
     open(log_path, 'a').write(log + '\n')
-    torch.save(net.state_dict(),
-               os.path.join(args.ckpt_path, args.exp_name, snapshot_name + '.pth'))
-    torch.save(optimizer.state_dict(),
-               os.path.join(args.ckpt_path, args.exp_name, snapshot_name + '_optim.pth'))
+    if curr_iter > 17000:
+        torch.save(net.state_dict(),
+                os.path.join(args.ckpt_path, args.exp_name, snapshot_name + '.pth'))
+        torch.save(optimizer.state_dict(),
+                os.path.join(args.ckpt_path, args.exp_name, snapshot_name + '_optim.pth'))
 
     net.train()
 
@@ -202,6 +203,6 @@ if __name__ == '__main__':
     val_loader = DataLoader(val_dataset, batch_size=1)
 
     criterion = nn.L1Loss().cuda()
-    log_path = os.path.join(args.ckpt_path, args.exp_name, "Simple_UNet" + str(datetime.datetime.now()) + '.txt')
+    log_path = os.path.join(args.ckpt_path, args.exp_name, "UNet" + str(datetime.datetime.now()) + '.txt')
 
     main()

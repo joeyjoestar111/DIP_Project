@@ -737,6 +737,8 @@ class DM2FNet(Base):
         del backbone.fc
         self.backbone = backbone
 
+        self.unet = UNet(in_channels=3, out_channels=3)
+
         self.down1 = nn.Sequential(
             nn.Conv2d(256, num_features, kernel_size=1), nn.SELU()
         )
@@ -787,7 +789,11 @@ class DM2FNet(Base):
             nn.Conv2d(num_features, num_features, kernel_size=3, padding=1), nn.SELU(),
             nn.Conv2d(num_features, num_features * 4, kernel_size=1)
         )
-
+        self.attention5 = nn.Sequential(
+            nn.Conv2d(num_features * 4, num_features, kernel_size=3, padding=1), nn.SELU(),
+            nn.Conv2d(num_features, num_features, kernel_size=3, padding=1), nn.SELU(),
+            nn.Conv2d(num_features, num_features * 4, kernel_size=1)
+        )
         self.refine = nn.Sequential(
             nn.Conv2d(num_features, num_features, kernel_size=3, padding=1), nn.SELU(),
             nn.Conv2d(num_features, num_features, kernel_size=3, padding=1), nn.SELU(),
@@ -810,12 +816,17 @@ class DM2FNet(Base):
             nn.Conv2d(num_features, num_features // 2, kernel_size=3, padding=1), nn.SELU(),
             nn.Conv2d(num_features // 2, 3, kernel_size=1)
         )
+        self.j5 = nn.Sequential(
+            nn.Conv2d(num_features, num_features // 2, kernel_size=3, padding=1), nn.SELU(),
+            nn.Conv2d(num_features // 2, 3, kernel_size=1)
+        )
+
 
         self.attention_fusion = nn.Sequential(
             nn.Conv2d(num_features * 4, num_features, kernel_size=1), nn.SELU(),
             nn.Conv2d(num_features, num_features // 2, kernel_size=3, padding=1), nn.SELU(),
             nn.Conv2d(num_features // 2, num_features // 2, kernel_size=3, padding=1), nn.SELU(),
-            nn.Conv2d(num_features // 2, 15, kernel_size=1)
+            nn.Conv2d(num_features // 2, 18, kernel_size=1)
         )
 
         for m in self.modules():
@@ -826,6 +837,8 @@ class DM2FNet(Base):
         x = (x0 - self.mean) / self.std
 
         backbone = self.backbone
+
+        #x = self.unet(x)
 
         layer0 = backbone.conv1(x)
         layer0 = backbone.bn1(layer0)
@@ -886,6 +899,12 @@ class DM2FNet(Base):
              down3 * attention4[:, 2, :, :, :] + down4 * attention4[:, 3, :, :, :]
         f4 = self.refine(f4) + f4
 
+        attention5= self.attention5(concat)
+        attention5 = F.softmax(attention5.view(n, 4, c, h, w), 1)
+        f5 = down1 * attention5[:, 0, :, :, :] + down2 * attention5[:, 1, :, :, :] + \
+             down3 * attention5[:, 2, :, :, :] + down4 * attention5[:, 3, :, :, :]
+        f5 = self.refine(f5) + f5
+
         if x0_hd is not None:
             x0 = x0_hd
             x = (x0 - self.mean) / self.std
@@ -918,20 +937,26 @@ class DM2FNet(Base):
         # x_j4 = (torch.log(1 + r4 * x0)).clamp(min=0, max=1)
         x_j4 = (torch.log(1 + torch.exp(log_x0 + r4))).clamp(min=0., max=1.)
 
+        r5 = F.upsample(self.j5(f5), size=x0.size()[2:], mode='bilinear')
+
+        # J5 Sigmoid
+        x_j5 = torch.sigmoid(x0 * r5)
+        #((torch.exp(x0 * r5) - torch.exp(- x0 * r5)) / 2 * self.std + self.mean).clamp(min=0., max=1.)
+
         attention_fusion = F.upsample(self.attention_fusion(concat), size=x0.size()[2:], mode='bilinear')
-        x_f0 = torch.sum(F.softmax(attention_fusion[:, :5, :, :], 1) *
+        x_f0 = torch.sum(F.softmax(attention_fusion[:, :6, :, :], 1) *
                          torch.stack((x_phy[:, 0, :, :], x_j1[:, 0, :, :], x_j2[:, 0, :, :],
-                                      x_j3[:, 0, :, :], x_j4[:, 0, :, :]), 1), 1, True)
-        x_f1 = torch.sum(F.softmax(attention_fusion[:, 5: 10, :, :], 1) *
+                                      x_j3[:, 0, :, :], x_j4[:, 0, :, :],x_j5[:, 0, :, :]), 1), 1, True)
+        x_f1 = torch.sum(F.softmax(attention_fusion[:, 6: 12, :, :], 1) *
                          torch.stack((x_phy[:, 1, :, :], x_j1[:, 1, :, :], x_j2[:, 1, :, :],
-                                      x_j3[:, 1, :, :], x_j4[:, 1, :, :]), 1), 1, True)
-        x_f2 = torch.sum(F.softmax(attention_fusion[:, 10:, :, :], 1) *
+                                      x_j3[:, 1, :, :], x_j4[:, 1, :, :],x_j5[:, 1, :, :]), 1), 1, True)
+        x_f2 = torch.sum(F.softmax(attention_fusion[:, 12:, :, :], 1) *
                          torch.stack((x_phy[:, 2, :, :], x_j1[:, 2, :, :], x_j2[:, 2, :, :],
-                                      x_j3[:, 2, :, :], x_j4[:, 2, :, :]), 1), 1, True)
+                                      x_j3[:, 2, :, :], x_j4[:, 2, :, :],x_j5[:, 2, :, :]), 1), 1, True)
         x_fusion = torch.cat((x_f0, x_f1, x_f2), 1).clamp(min=0., max=1.)
 
         if self.training:
-            return x_fusion, x_phy, x_j1, x_j2, x_j3, x_j4, t, a.view(x.size(0), -1)
+            return x_fusion, x_phy, x_j1, x_j2, x_j3, x_j4, x_j5, t, a.view(x.size(0), -1)
         else:
             return x_fusion
 
@@ -970,12 +995,21 @@ class UNet(nn.Module):
         )
         self.decoder1 = UNet.conv_block(features * 2, features)
 
-        self.out = nn.Conv2d(in_channels=features, out_channels=out_channels, kernel_size=1)
+        self.out = nn.Conv2d(in_channels=features, out_channels=in_channels, kernel_size=1)
 
-        self.final = nn.Conv2d(in_channels=9  ,out_channels = out_channels, kernel_size=1)
+        self.final = nn.Conv2d(in_channels=3*in_channels  ,out_channels = out_channels, kernel_size=5)
 
+    def next_power_of_2(self, x):
+        return 1 if x == 0 else 2**(x - 1).bit_length()
 
     def forward(self, x):
+
+        original_size = x.size()[2:]
+        
+        # 扩展到2的幂次大小
+        new_size = [self.next_power_of_2(s) for s in original_size]
+        x = nn.functional.pad(x, (0, new_size[1] - original_size[1], 0, new_size[0] - original_size[0]))
+
         #block1
         enc1 = self.encoder1(x)
         enc2 = self.encoder2(self.pool1(enc1))
@@ -1044,11 +1078,10 @@ class UNet(nn.Module):
 
 
         torch.cuda.empty_cache()
-        concat = (out_1 + out_2 + out_3) / 3
-        #concat = torch.cat((out_1, out_2, out_3), dim=1)
-        #concat = self.final(concat)
-        #concat = torch.sigmoid(concat)
-
+        #concat = (out_1 + out_2 + out_3) / 3
+        concat = torch.cat((out_1, out_2, out_3), dim=1)
+        concat = self.final(concat)
+        concat = concat[:, :, :original_size[0], :original_size[1]]
         return concat
 
     @staticmethod
