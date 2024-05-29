@@ -15,7 +15,7 @@ from tools.config import TRAIN_ITS_ROOT, TEST_SOTS_ROOT
 from datasets import ItsDataset, SotsDataset
 from tools.utils import AvgMeter, check_mkdir
 
-from skimage.metrics import peak_signal_noise_ratio, structural_similarity
+from skimage.metrics import peak_signal_noise_ratio, structural_similarity, mean_squared_error
 
 
 def parse_args():
@@ -34,8 +34,8 @@ def parse_args():
 
 cfgs = {
     'use_physical': True,
-    'iter_num': 40000,
-    'train_batch_size': 4,
+    'iter_num': 20000,
+    'train_batch_size': 32,
     'last_iter': 0,
     'lr': 5e-4,
     'lr_decay': 0.9,
@@ -84,6 +84,7 @@ def train(net, optimizer):
         loss_x_jf_record, loss_x_j0_record = AvgMeter(), AvgMeter()
         loss_x_j1_record, loss_x_j2_record = AvgMeter(), AvgMeter()
         loss_x_j3_record, loss_x_j4_record = AvgMeter(), AvgMeter()
+        loss_x_j5_record = AvgMeter()
         loss_t_record, loss_a_record = AvgMeter(), AvgMeter()
 
         for data in train_loader:
@@ -103,7 +104,7 @@ def train(net, optimizer):
 
             optimizer.zero_grad()
 
-            x_jf, x_j0, x_j1, x_j2, x_j3, x_j4, t, a = net(haze)
+            x_jf, x_j0, x_j1, x_j2, x_j3, x_j4, x_j5, t, a = net(haze)
 
             loss_x_jf = criterion(x_jf, gt)
             loss_x_j0 = criterion(x_j0, gt)
@@ -111,11 +112,12 @@ def train(net, optimizer):
             loss_x_j2 = criterion(x_j2, gt)
             loss_x_j3 = criterion(x_j3, gt)
             loss_x_j4 = criterion(x_j4, gt)
+            loss_x_j5 = criterion(x_j5, gt)
 
             loss_t = criterion(t, gt_trans_map)
             loss_a = criterion(a, gt_ato)
 
-            loss = loss_x_jf + loss_x_j0 + loss_x_j1 + loss_x_j2 + loss_x_j3 + loss_x_j4 \
+            loss = loss_x_jf + loss_x_j0 + loss_x_j1 + loss_x_j2 + loss_x_j3 + loss_x_j4 + loss_x_j5 \
                    + 10 * loss_t + loss_a
             loss.backward()
 
@@ -130,6 +132,7 @@ def train(net, optimizer):
             loss_x_j2_record.update(loss_x_j2.item(), batch_size)
             loss_x_j3_record.update(loss_x_j3.item(), batch_size)
             loss_x_j4_record.update(loss_x_j4.item(), batch_size)
+            loss_x_j5_record.update(loss_x_j5.item(), batch_size)
 
             loss_t_record.update(loss_t.item(), batch_size)
             loss_a_record.update(loss_a.item(), batch_size)
@@ -137,10 +140,10 @@ def train(net, optimizer):
             curr_iter += 1
 
             log = '[iter %d], [train loss %.5f], [loss_x_fusion %.5f], [loss_x_phy %.5f], [loss_x_j1 %.5f], ' \
-                  '[loss_x_j2 %.5f], [loss_x_j3 %.5f], [loss_x_j4 %.5f], [loss_t %.5f], [loss_a %.5f], ' \
+                  '[loss_x_j2 %.5f], [loss_x_j3 %.5f], [loss_x_j4 %.5f], [loss_x_j5 %.5f] [loss_t %.5f], [loss_a %.5f], ' \
                   '[lr %.13f]' % \
                   (curr_iter, train_loss_record.avg, loss_x_jf_record.avg, loss_x_j0_record.avg,
-                   loss_x_j1_record.avg, loss_x_j2_record.avg, loss_x_j3_record.avg, loss_x_j4_record.avg,
+                   loss_x_j1_record.avg, loss_x_j2_record.avg, loss_x_j3_record.avg, loss_x_j4_record.avg, loss_x_j5_record.avg,
                    loss_t_record.avg, loss_a_record.avg, optimizer.param_groups[1]['lr'])
             print(log)
             open(log_path, 'a').write(log + '\n')
@@ -157,6 +160,7 @@ def validate(net, curr_iter, optimizer):
     net.eval()
 
     loss_record = AvgMeter()
+    psnr_record, ssim_record, mse_record = AvgMeter(), AvgMeter(), AvgMeter()
 
     with torch.no_grad():
         for data in tqdm(val_loader):
@@ -169,10 +173,24 @@ def validate(net, curr_iter, optimizer):
 
             loss = criterion(dehaze, gt)
             loss_record.update(loss.item(), haze.size(0))
+            for i in range(len(haze)):
+                r = dehaze[i].cpu().numpy().transpose([1, 2, 0])  # data range [0, 1]
+                g = gt[i].cpu().numpy().transpose([1, 2, 0])
+                psnr = peak_signal_noise_ratio(g, r)
+                ssim = structural_similarity(g, r, data_range=1, multichannel=True,
+                                             gaussian_weights=True, sigma=1.5, use_sample_covariance=False, win_size = 11, channel_axis=2)
+                mse = mean_squared_error(g, r)
+                psnr_record.update(psnr)
+                ssim_record.update(ssim)
+                mse_record.update(mse)
 
     snapshot_name = 'iter_%d_loss_%.5f_lr_%.6f' % (curr_iter + 1, loss_record.avg, optimizer.param_groups[1]['lr'])
-    print('[validate]: [iter %d], [loss %.5f]' % (curr_iter + 1, loss_record.avg))
-    if ((curr_iter+1)%2000):
+    print('[validate]: [iter {}], [loss {:.5f}] [PSNR {:.4f}] [SSIM {:.4f}] [MSE {:.4f}]'.format(
+        curr_iter + 1, loss_record.avg, psnr_record.avg, ssim_record.avg, mse_record.avg))
+    log = '[validate]: [iter {}], [loss {:.5f}] [PSNR {:.4f}] [SSIM {:.4f}] [MSE {:.4f}]'.format(
+        curr_iter + 1, loss_record.avg, psnr_record.avg, ssim_record.avg, mse_record.avg)            
+    open(log_path, 'a').write(log + '\n')
+    if (curr_iter+1>20000):
         torch.save(net.state_dict(),
                 os.path.join(args.ckpt_path, args.exp_name, snapshot_name + '.pth'))
         torch.save(optimizer.state_dict(),
@@ -196,6 +214,6 @@ if __name__ == '__main__':
     val_loader = DataLoader(val_dataset, batch_size=8)
 
     criterion = nn.L1Loss().cuda()
-    log_path = os.path.join(args.ckpt_path, args.exp_name, "Baseline_Reside"+str(datetime.datetime.now()) + '.txt')
+    log_path = os.path.join(args.ckpt_path, args.exp_name, "Function_sigmoid"+str(datetime.datetime.now()) + '.txt')
 
     main()
