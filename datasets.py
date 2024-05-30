@@ -227,6 +227,39 @@ class OtsDataset(data.Dataset):
     def __len__(self):
         return len(self.imgs)
 
+def make_dataset_hazerd(root: str, mode: str):
+    img_list = []
+    for img_name in os.listdir(os.path.join(root, mode, 'hazy')):
+        gt_name = img_name.replace('hazy', 'gt')
+        assert os.path.exists(os.path.join(root, mode, 'gt', gt_name))
+        img_list.append([os.path.join(root, mode, 'hazy', img_name),
+                         os.path.join(root, mode, 'gt', gt_name)])
+    return img_list
+
+class HazerdDataset(data.Dataset):
+    def __init__(self, root, mode=None):
+        self.root = root
+        self.imgs = make_dataset(root)
+        self.mode = mode
+
+    def __getitem__(self, index):
+        haze_path, _, gt_path = self.imgs[index]
+        name = os.path.splitext(os.path.basename(haze_path))[0]
+
+        haze_image = Image.open(haze_path).convert('RGB')
+        haze_image = to_tensor(haze_image)
+
+        idx0 = name.split('_')[1]
+        gt_name = 'IMG_' + idx0 + '_gt.jpg'
+        gt_image = Image.open(os.path.join(self.root, 'gt', gt_name)).convert('RGB')
+        gt_image = to_tensor(gt_image)
+        if gt_image.shape != haze_image.shape:
+            gt_image = gt_image[:, 10:470, 10:630]
+
+        return haze_image, gt_image, name
+
+    def __len__(self):
+        return len(self.imgs)
 
 class SotsDataset(data.Dataset):
     def __init__(self, root, mode=None):
@@ -268,7 +301,7 @@ class OHazeDataset(data.Dataset):
         gt = Image.open(gt_path).convert('RGB')
 
         if 'train' in self.mode:
-            # img, gt = random_crop(416, img, gt)
+            # img, gt = random_crop(512, img, gt)
             if random.random() < 0.5:
                 img = img.transpose(Image.FLIP_LEFT_RIGHT)
                 gt = gt.transpose(Image.FLIP_LEFT_RIGHT)
